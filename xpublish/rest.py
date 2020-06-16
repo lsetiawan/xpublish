@@ -39,6 +39,10 @@ class RestAccessor:
     ----------
     xarray_obj : Dataset
         Dataset object to be served through the REST API.
+    routers : fastapi.APIRouter
+        Optional parameter to inject custom fastapi routers.
+    kwargs : dict
+        Keyword arguments to be passed to __call__ method.
 
     Notes
     -----
@@ -46,11 +50,12 @@ class RestAccessor:
     the ``RestAccessor.__call__()`` method.
     """
 
-    def __init__(self, xarray_obj):
+    def __init__(self, xarray_obj=None, routers=None, **kwargs):
 
         self._obj = xarray_obj
 
         self._app = None
+        self._routers = routers
         self._zmetadata = None
 
         self._attributes = {}
@@ -60,6 +65,9 @@ class RestAccessor:
         self._app_kws = {}
         self._cache = None
         self._initialized = False
+
+        if not self._obj:
+            self.__call__(**kwargs)
 
     def __call__(self, cache_kws=None, app_kws=None):
         """
@@ -222,48 +230,55 @@ class RestAccessor:
 
         self._app = FastAPI(**self._app_kws)
 
-        @self._app.get(f'/{zarr_metadata_key}')
-        def get_zmetadata():
-            return Response(
-                json.dumps(self.zmetadata_json()).encode('ascii'), media_type='application/json'
-            )
+        if self._routers:
+            prefix = ''
+            if len(self._routers) > 1:
+                prefix = '/datasets/{dataset_id}'
+            self._app.include_router(self._routers.router, prefix=prefix)
+        else:
 
-        @self._app.get(f'/{group_meta_key}')
-        def get_zgroup():
-            return self.zmetadata['metadata'][group_meta_key]
+            @self._app.get(f'/{zarr_metadata_key}')
+            def get_zmetadata():
+                return Response(
+                    json.dumps(self.zmetadata_json()).encode('ascii'), media_type='application/json'
+                )
 
-        @self._app.get(f'/{attrs_key}')
-        def get_zattrs():
-            return self.zmetadata['metadata'][attrs_key]
+            @self._app.get(f'/{group_meta_key}')
+            def get_zgroup():
+                return self.zmetadata['metadata'][group_meta_key]
 
-        @self._app.get('/keys')
-        def list_keys():
-            return list(self._obj.variables)
+            @self._app.get(f'/{attrs_key}')
+            def get_zattrs():
+                return self.zmetadata['metadata'][attrs_key]
 
-        @self._app.get('/')
-        def repr():
-            with xr.set_options(display_style='html'):
-                return HTMLResponse(self._obj._repr_html_())
+            @self._app.get('/keys')
+            def list_keys():
+                return list(self._obj.variables)
 
-        @self._app.get('/info')
-        def info():
-            return self._info()
+            @self._app.get('/')
+            def repr():
+                with xr.set_options(display_style='html'):
+                    return HTMLResponse(self._obj._repr_html_())
 
-        @self._app.get('/dict')
-        def to_dict():
-            return self._obj.to_dict(data=False)
+            @self._app.get('/info')
+            def info():
+                return self._info()
 
-        @self._app.get('/{var}/{chunk}')
-        def get_key(var: str, chunk: str):
-            # First check that this request wasn't for variable metadata
-            if array_meta_key in chunk:
-                return self.zmetadata['metadata'][f'{var}/{array_meta_key}']
-            elif attrs_key in chunk:
-                return self.zmetadata['metadata'][f'{var}/{attrs_key}']
-            elif group_meta_key in chunk:
-                raise HTTPException(status_code=404, detail='No subgroups')
-            else:
-                return self._get_key(var, chunk)
+            @self._app.get('/dict')
+            def to_dict():
+                return self._obj.to_dict(data=False)
+
+            @self._app.get('/{var}/{chunk}')
+            def get_key(var: str, chunk: str):
+                # First check that this request wasn't for variable metadata
+                if array_meta_key in chunk:
+                    return self.zmetadata['metadata'][f'{var}/{array_meta_key}']
+                elif attrs_key in chunk:
+                    return self.zmetadata['metadata'][f'{var}/{attrs_key}']
+                elif group_meta_key in chunk:
+                    raise HTTPException(status_code=404, detail='No subgroups')
+                else:
+                    return self._get_key(var, chunk)
 
         @self._app.get('/versions')
         def versions():
